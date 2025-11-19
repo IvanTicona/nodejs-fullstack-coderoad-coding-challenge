@@ -1,26 +1,106 @@
-name: CI Pipeline
+name: Deploy Fullstack App to EC2
 
-on:                     # Cuándo se ejecuta
+on:
   push:
-    branches: [ main ]  # Solo cuando hay un push en main
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main 
 
-jobs:                   # Qué tareas ejecuta
-  build:
-    runs-on: ubuntu-latest  # Máquina virtual de GitHub
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-    steps:               # Pasos a ejecutar
-      - name: Checkout code
-        uses: actions/checkout@v4   # Descarga el código del repo
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '20' 
 
-      - name: Install dependencies
-        run: npm install
+      # Instala dependencias de la raíz (Backend) y construye el Frontend
+      # El script 'build' de la raíz se encarga de todo el proceso en la carpeta client/.
+      - name: Install Dependencies and Build Frontend
+        run: |
+          npm install
+          npm run build
+        # Esto se ejecuta en la raíz del repositorio
 
-      - name: Run tests
-        run: npm test
+      # Transferir TODOS los archivos (incluyendo client/build) a una carpeta temporal
+      - name: Transfer entire repo to /tmp/app-deploy via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          source: "." 
+          target: "/tmp/app-deploy/" 
+          overwrite: true
+          # Excluimos node_modules, ya que se instalan en el servidor
+          exclude: ".git,.github,node_modules,client/node_modules" 
+
+      # Ejecutar script de despliegue, PM2 y reinicio en el servidor
+      - name: Final Deploy, PM2 Setup, and Restart Services
+        uses: appleboy/ssh-action@master 
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          script: |
+            # VARIABLES DE DESPLIEGUE
+            APP_USER=${{ secrets.EC2_USER }} 
+            BACKEND_DIR="/home/$APP_USER/nodejs-app"
+            FRONTEND_DIR="/var/www/html"
+            APACHE_USER="http" # Usuario de Apache en Arch Linux
+            
+            # --- 1. PREPARACIÓN ---
+            mkdir -p $BACKEND_DIR
+            
+            # --- 2. DESPLIEGUE DE ARCHIVOS ---
+            # Borrar y copiar los archivos del Backend
+            sudo rm -rf $BACKEND_DIR/*
+            sudo cp -r /tmp/app-deploy/* $BACKEND_DIR/
+            
+            # Borrar contenido anterior del Frontend y copiar el nuevo build
+            sudo rm -rf $FRONTEND_DIR/*
+            sudo cp -r /tmp/app-deploy/client/build/* $FRONTEND_DIR/
+            
+            # --- 3. CONFIGURACIÓN DEL SERVIDOR ---
+            
+            # Instalar dependencias del Backend
+            cd $BACKEND_DIR
+            npm install --production
+            
+            # Asignar propiedad (Apache) al Frontend para que el servidor lo lea
+            sudo chown -R $APACHE_USER:$APACHE_USER $FRONTEND_DIR
+            sudo chmod -R 755 $FRONTEND_DIR
+            
+            # --- 4. GESTIÓN DEL PROCESO (USANDO PM2) ---
+            
+            # Instalar PM2 globalmente si no existe (Necesita sudo la primera vez)
+            # Verifica si PM2 ya está instalado
+            if ! command -v pm2 &> /dev/null
+            then
+                echo "PM2 no encontrado. Instalando..."
+                sudo npm install -g pm2
+            fi
+            
+            # Detener proceso existente e iniciar/actualizar
+            # 'server.js' es el archivo de inicio de tu backend.
+            # 'node-app-backend' es el nombre que le daremos al proceso en PM2.
+            
+            PM2_EXISTS=$(pm2 list | grep 'node-app-backend' | wc -l)
+
+            if [ $PM2_EXISTS -eq 0 ]; then
+                # Si el proceso NO existe, lo iniciamos por primera vez
+                pm2 start $BACKEND_DIR/server.js --name "node-app-backend"
+            else
+                # Si el proceso SÍ existe, simplemente lo recargamos para tomar el nuevo código
+                pm2 reload "node-app-backend"
+            fi
+
+            # Guardar la lista de procesos PM2 para que reinicien al boot (solo necesario si usas el startup script de PM2)
+            pm2 save
+            
+            # --- 5. LIMPIEZA ---
+            sudo rm -rf /tmp/app-deploy
