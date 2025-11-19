@@ -24,7 +24,7 @@ jobs:
         run: |
           npm install
           npm run build
-        # Esto se ejecuta en la raíz del repositorio
+        working-directory: ${{ github.workspace }}
 
       # Transferir TODOS los archivos (incluyendo client/build) a una carpeta temporal
       - name: Transfer entire repo to /tmp/app-deploy via SCP
