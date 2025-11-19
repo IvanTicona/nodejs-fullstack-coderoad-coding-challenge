@@ -23,7 +23,11 @@ jobs:
       # Instala dependencias de la raíz (Backend) y construye el Frontend
       # El script 'build' de la raíz se encarga de todo el proceso en la carpeta client/.
       - name: Install Dependencies and Build Frontend
+        working-directory: ./server
         run: |
+          npm install
+          npm run build
+          cd ../client
           npm install
           npm run build
 
