@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
+        with:
+          path: .
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -24,7 +26,6 @@ jobs:
         run: |
           npm install
           npm run build
-        working-directory: ${{ github.workspace }}
 
       # Transferir TODOS los archivos (incluyendo client/build) a una carpeta temporal
       - name: Transfer entire repo to /tmp/app-deploy via SCP
